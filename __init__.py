@@ -18,7 +18,7 @@ class JMagics(Magics):
         session = id(return_caller_locals(2))
         if session not in self.J_sessions:
             self.create_session(session)
-        self.update_internal_values(session, dir())
+        self.update_internal_values(session)
         self.J_sessions[session].get_changed_var_names()
         self.J_sessions[session](line)
         self.update_external_values(session)
@@ -27,8 +27,7 @@ class JMagics(Magics):
         J_ses = JInstance()
         self.J_sessions[session] = J_ses
 
-    def update_internal_values(self, session, var):
-        print var
+    def update_internal_values(self, session):
         vars = []
         for level in itertools.count(2):
             try:
@@ -54,7 +53,6 @@ class JMagics(Magics):
             if name.endswith('_base_'):
                 name = name[:-6]  # strip off _base_
                 locs[name] = self.J_sessions[session](name)
-                print locs[name]
 
 
 def return_caller_locals(levels=1):
@@ -229,7 +227,6 @@ def pyToJ(item):
                 items=' '.join(str(i) for i in item.flat)
             )
         if item.dtype == str:
-            print item
             return '(({shape{) $ (\'{items\'))'.format(
                 shape=' '.join(str(i) for i in item.shape),
                 items=''.join(str(i).replace("'", "''") for i in item.flat)
