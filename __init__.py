@@ -1,7 +1,7 @@
 __author__ = 'Synthetica'
 
 from IPython.core.magic import (Magics, magics_class, line_magic)
-from ctypes import *
+import ctypes
 import numpy as np
 import itertools
 import os
@@ -15,13 +15,17 @@ class JMagics(Magics):
 
     @line_magic
     def J(self, line):
-        session = id(return_caller_locals(2))
+        caller_locs = return_caller_locals(6)
+        # print caller_locs
+        session = id(caller_locs)
+        # print session
         if session not in self.J_sessions:
             self.create_session(session)
         self.update_internal_values(session)
         self.J_sessions[session].get_changed_var_names()
-        self.J_sessions[session](line)
+        return_value = self.J_sessions[session](line)
         self.update_external_values(session)
+        return return_value
 
     def create_session(self, session):
         J_ses = JInstance()
@@ -29,10 +33,10 @@ class JMagics(Magics):
 
     def update_internal_values(self, session):
         vars = []
-        for level in itertools.count(2):
+        for level in itertools.count(6):
             try:
                 vars.append(return_caller_locals(level))
-            except AttributeError:
+            except AttributeError as E:
                 # top level reached
                 break
 
@@ -43,8 +47,11 @@ class JMagics(Magics):
         for name, value in initial_dict.iteritems():
             try:
                 self.J_sessions[session].set_var(name, value)
-            except TypeError:
-                pass  # unable to parse
+            except TypeError as E:
+                continue  # unable to parse
+            #
+            # else:
+            #     print name, ':', `value`
 
     def update_external_values(self, session):
         locs = return_caller_locals(7) #TODO: magic number, replace
@@ -65,20 +72,20 @@ def return_caller_locals(levels=1):
         del frame
     return vrs
 
-type_table = {1: c_bool,
-              2: c_char,
-              4: c_int,
-              8: c_double
+type_table = {1: ctypes.c_bool,
+              2: ctypes.c_char,
+              4: ctypes.c_int,
+              8: ctypes.c_double
               }
 
 _path = os.path.abspath(os.path.dirname(getsourcefile(lambda: None)))
 if os.name == 'nt':
     try:
-        std_lib = oledll.LoadLibrary(os.path.join(_path, 'j64.dll'))
+        std_lib = ctypes.oledll.LoadLibrary(os.path.join(_path, 'j64.dll'))
     except WindowsError:
-        std_lib = oledll.LoadLibrary(os.path.join(_path, 'j32.dll'))
+        std_lib = ctypes.oledll.LoadLibrary(os.path.join(_path, 'j32.dll'))
 elif os.name == 'posix':
-    std_lib = CDLL(os.path.join(_path, 'libj.so'))
+    std_lib = ctypes.CDLL(os.path.join(_path, 'libj.so'))
 else:
     raise OSError('Unsupported os {o}'.format(repr(os.name)))
 
@@ -148,6 +155,7 @@ class JInstance(object):
         self.execute_command(query)
 
     def execute_command(self, command, var_name=None, return_result=True):
+        #print command
         if var_name is not None:
             self.set_var_raw(var_name, command)
             if return_result:
@@ -167,9 +175,9 @@ class JInstance(object):
         self.execute_command('{n} =: {v}'.format(n=name, v=value))
 
     def get_var(self, var_name):
-        pointers = [pointer(c_int()) for _ in range(4)]
+        pointers = [ctypes.pointer(ctypes.c_int()) for _ in range(4)]
         self.JGetM(var_name, *pointers)
-        data = JRepr(*pointers)
+        data = JRepr(*(p.contents.value for p in pointers))
         return data
 
     def get_changed_var_names(self):
@@ -184,13 +192,13 @@ class JInstance(object):
         return wrapper
 
 def JRepr(tpe, rnk, shp, pos, typelist=type_table):
-    tpe, rnk, shp, pos = (int(i.contents.value) for i in (tpe, rnk, shp, pos))
-    shape = tuple(typelist[4].from_address(shp + i*sizeof(typelist[4])).value
+    #tpe, rnk, shp, pos = (int(i.contents.value) for i in (tpe, rnk, shp, pos))
+    shape = tuple(typelist[4].from_address(shp + i*ctypes.sizeof(typelist[4])).value
                   for i in range(rnk))
     datalen = np.product(shape) if shape else 1
     if tpe in typelist:
         ctype = typelist[tpe]
-        ctypesize = sizeof(ctype)
+        ctypesize = ctypes.sizeof(ctype)
 
         array = np.fromiter(
             (ctype.from_address(pos + i*ctypesize).value
@@ -202,14 +210,15 @@ def JRepr(tpe, rnk, shp, pos, typelist=type_table):
         return np.resize(array, shape)
     elif tpe == 32:
         pointers = [map(lambda x: x.value,
-                        (
-                            c_int.from_address(pos + i*16 + 0),
-                            c_int.from_address(pos + i*16 + 4),
-                            c_int.from_address(pos + i*16 + 8),
-                            c_int.from_address(pos + i*16 + 12),
+                        (ctypes.c_int.from_address(pos + i*16 + 0),
+                         ctypes.c_int.from_address(pos + i*16 + 4),
+                         ctypes.c_int.from_address(pos + i*16 + 8),
+                         ctypes.c_int.from_address(pos + i*16 + 12))
                         )
-                        ) for i in range(datalen)]
+                    for i in range(datalen)]
         return [JRepr(*i) for i in pointers]
+    else:
+        raise TypeError
 
 
 def debug(command):
@@ -221,14 +230,16 @@ def pyToJ(item):
     elif type(item) in (list, tuple):
         return ','.join('(<{})'.format(pyToJ(i)) for i in item)
     elif type(item) == np.ndarray:
+        shp = (' '.join(str(i) for i in item.shape) if item.shape else '0 $ 0')
         if item.dtype in (int, float, long):
+
             return '(({shape}) $ ({items}))'.format(
-                shape=' '.join(str(i) for i in item.shape),
+                shape=shp,
                 items=' '.join(str(i) for i in item.flat)
             )
         if item.dtype == str:
             return '(({shape{) $ (\'{items\'))'.format(
-                shape=' '.join(str(i) for i in item.shape),
+                shape=shp,
                 items=''.join(str(i).replace("'", "''") for i in item.flat)
             )
     raise TypeError()
