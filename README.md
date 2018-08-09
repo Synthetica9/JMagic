@@ -1,4 +1,4 @@
-#JMagic
+# JMagic
 
     In [1]: get_ipython().register_magics(JMagics)
 
